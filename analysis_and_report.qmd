@@ -1,0 +1,731 @@
+---
+title: |
+  Statistical Replication of Support for Marginalized Groups with Distributive Fairness Findor et al., 2022
+  \vspace{25pt}  
+author: "Emily Han and Junyi Hui"
+date: "March 15, 2025"  # Properly formatted date string
+date-format: "MMMM D, YYYY"
+format:
+  pdf:
+    number-sections: true
+    fontsize: 12pt
+    linestretch: 2  
+    geometry: margin=1in
+    mainfont: "Times New Roman"
+    include-before-body: 
+      text: |
+        \thispagestyle{empty} 
+        \newpage
+        \pagenumbering{arabic} 
+
+csl: https://www.zotero.org/styles/american-political-science-association
+execute:
+  echo: false
+  warning: false
+  message: false
+editor: visual
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo=FALSE, warning=FALSE)
+```
+
+\newpage
+
+# Introduction
+
+Our focus is specifically on Study 3, which uses a nationally representative survey experiment to assess the effects of these distributive fairness principles on Slovak respondents’ support for social housing policies for the Roma minority. The study employs a between-subjects experimental design with ordinal logistic regression as the primary statistical method.
+
+Through replication, this report aims to summarize and replicate the statistical analyses from Study 3 to evaluate the robustness of the original findings. In addition, we consider alternative model specifications by testing some variations of the original ordinal logistic regression model. A comparison of model performances will be determined using cross-validation to explore which model offers the best out-of-sample predictive accuracy.
+
+## Overview of Original Study
+
+The Study 3’s unit of analysis is individual survey respondents from a nationally representative Slovak sample, with each case in the dataset representing a single respondent’s response. Although the observational independence is assumed in the study’s experiments, the study’s between subject design addressed the concerns by ensuring that each participant is exposed to only one experimental condition.
+
+The dataset for Study 3 consists of 1,009 respondents, representing a nationally representative sample of Slovaks. The data were collected through an online survey, using quota sampling to match gender, age, region, size of municipality, and education distributions of the Slovak population. The survey was not purely random but structured to ensure national representativeness.
+
+### Dependent Variables (DV) and Experimental Conditions
+
+Study 3 employed a between-subjects experimental design where participants were randomly assigned to either a control group or one of three treatment conditions. In the control group, participants read a neutral scenario stating that the municipality of Demerice was considering building social housing for the poorest Roma residents with no additional justification provided. For the equality condition, the housing project would only be approved if the same amount of funding allocated to Roma residents was also allocated to non-Roma residents for their own projects. In reciprocity conditions, only Roma residents who contributed to the construction of the housing project would be eligible for the housing. Lastly, the need condition states housing would be provided only to those Roma residents in the most difficult life situations, prioritizing those in need.
+
+The study’s main analysis focuses on two dependent variables, both discrete and ordered, which measure support for the social housing project for Roma residents on an ordinal scale (1 = Strongly Disagree, 4 = Strongly Agree). The first dependent variable measures the respondent’s personal support for the construction project, while the second measures the respondent’s perception of the majority(people in Slovakia)/societal support for the project among people in Slovakia.
+
+In addition to these dependent variables, the study includes two additional measures, both discrete and ordered. The first assesses perceptions of EU funding allocation benefits on a 4-point ordinal scale (1 = Completely Agree, 4 = Completely Disagree), measuring whether respondents believe that the use of EU funds benefits Slovak inhabitants (the majority). The second examines perceived economic-social competition between Slovak and Roma, also on a 4-point ordinal scale (1 = Completely Agree, 4 = Completely Disagree), evaluating whether respondents think that special benefits for the Roma, such as housing and welfare, negatively impact others (Findor et al. 2023, Supplementary Information).
+
+```{r}
+suppressMessages({
+  library(dplyr)
+  library(PerformanceAnalytics)
+  library(kableExtra)
+  library(psych)
+  library(ggplot2)
+  library(jmv)
+  library(magick)
+  library(report)
+  library(reshape2)
+  library(ordinal)
+  library(RVAideMemoire)
+  library(emmeans)
+  library(effectsize)
+  library(repmod)
+  library(MANOVA.RM)
+  library(ggrepel)
+  library(matrixTests)
+  library(tidyverse)
+  library(lessR)
+  library(rstatix)
+  library(multcomp)
+  library(jtools)
+  library(sjPlot)
+  library(gt)
+  library(rio)
+  library(broom)
+  library(caret)
+  library(MASS)
+  library(gtsummary)
+  library(huxtable)
+  library(stargazer)
+})
+```
+
+```{r}
+s3 <- import("./data/Study3.sav")
+
+s3$group= factor(s3$SKUPINA, levels = c(1, 2,3,4), labels = c("Control","Equality", "Proportionality", "Need"))
+s3$SEX <- factor(s3$SEX, levels = c(1, 2), labels = c("Male","Female"))
+s3$AGECAT= factor(s3$AGECAT, levels = c(1,2,3,4,5,6), labels = c("18-24","25-34","35-44", "45-54","55-64","65+"))
+s3$EDU= factor(s3$EDU, levels = c(1, 2,3,4), labels = c("Primary","Secondary (no diploma)","Secondary (complete)", "University"))
+s3$SIZE= factor(s3$SIZE, levels = c(1, 2,3,4,5), labels = c("less than 1k","1k-4 999","5k-19 999", "20k - 99 999","100k+"))
+s3$REG= factor(s3$REG, levels = c(1, 2,3,4,5,6,7,8), labels = c("Bratislavsky","Trnavsky","Trenciansky", "Nitriansky","Zilinsky","Banskobystricky","Presovsky","Kosicky"))
+
+s3$income <- car::recode(s3$PINCOME,"'1'='below median';'2'='below median';'8'='NA';'9'='NA'; else = 'above median'")
+```
+
+```{r fig1, echo=FALSE, fig.cap="Mean Support for Building Social Housing"}
+s3 <- s3 %>%
+  mutate(E3_numeric = as.numeric(E3),
+         E4_numeric = as.numeric(E4))
+
+# Compute means for each group
+group_means <- s3 %>%
+  group_by(group) %>%
+  summarize(mean_E3 = mean(E3_numeric, na.rm = TRUE),
+            mean_E4 = mean(E4_numeric, na.rm = TRUE))
+
+# Rename 'Proportionality' to 'Reciprocity'
+group_means <- group_means %>%
+  mutate(group = dplyr::recode(group, "Proportionality" = "Reciprocity"))
+
+# Convert group into a factor with the desired order
+group_means$group <- factor(group_means$group, levels = c("Control", "Equality", "Reciprocity", "Need"))
+
+# Reshape data for ggplot
+group_means_long <- group_means %>%
+  pivot_longer(cols = c(mean_E3, mean_E4), names_to = "Measure", values_to = "Mean")
+
+
+
+# Grouped bar plot with side-by-side bars
+ggplot(group_means_long, aes(x = group, y = Mean, fill = Measure)) +
+  geom_bar(stat = "identity", position = position_dodge(width = 0.7), color = "black") +
+  labs(
+    x = NULL, 
+    y = "Mean agreement with building social housing \n(1 = completely disagree)",
+    fill = "Type of Support"
+  ) +
+  scale_fill_manual(
+    values = c("mean_E3" = "#B0B0B0", "mean_E4" = "#505050"),  # Custom colors
+    labels = c("Personal Agreement", "Majority Perspective")  # Legend labels
+  ) +
+  theme_minimal() + 
+  theme(
+        panel.grid.major = element_blank(),  # Remove major grid lines
+        panel.grid.minor = element_blank()   # Remove minor grid lines
+    ) +
+  ylim(0, 4)
+
+```
+
+```{r}
+
+geom_flat_violin <- function(mapping = NULL, data = NULL, stat = "ydensity",
+                               position = "dodge", trim = TRUE, scale = "area", 
+                               show.legend = NA, inherit.aes = TRUE, ...) {
+  layer(
+    data = data,
+    mapping = mapping,
+    stat = stat,
+    geom = GeomFlatViolin,  # this needs the GeomFlatViolin definition as well
+    position = position,
+    show.legend = show.legend,
+    inherit.aes = inherit.aes,
+    params = list(trim = trim, scale = scale, ...)
+  )
+}
+
+
+"%||%" <- function(a, b) {
+  if (!is.null(a)) a else b
+}
+
+geom_flat_violin <- function(mapping = NULL, data = NULL, stat = "ydensity",
+                        position = "dodge", trim = TRUE, scale = "area",
+                        show.legend = NA, inherit.aes = TRUE, ...) {
+  layer(
+    data = data,
+    mapping = mapping,
+    stat = stat,
+    geom = GeomFlatViolin,
+    position = position,
+    show.legend = show.legend,
+    inherit.aes = inherit.aes,
+    params = list(
+      trim = trim,
+      scale = scale,
+      ...
+    )
+  )
+}
+
+#' @rdname ggplot2-ggproto
+#' @format NULL
+#' @usage NULL
+#' @export
+GeomFlatViolin <-
+  ggproto("GeomFlatViolin", Geom,
+          setup_data = function(data, params) {
+            data$width <- data$width %||%
+              params$width %||% (resolution(data$x, FALSE) * 0.9)
+            
+            # ymin, ymax, xmin, and xmax define the bounding rectangle for each group
+            data %>%
+              group_by(group) %>%
+              mutate(ymin = min(y),
+                     ymax = max(y),
+                     xmin = x,
+                     xmax = x + width / 2)
+            
+          },
+          
+          draw_group = function(data, panel_scales, coord) {
+            # Find the points for the line to go all the way around
+            data <- transform(data, xminv = x,
+                              xmaxv = x + violinwidth * (xmax - x))
+            
+            # Make sure it's sorted properly to draw the outline
+            newdata <- rbind(plyr::arrange(transform(data, x = xminv), y),
+                             plyr::arrange(transform(data, x = xmaxv), -y))
+            
+            # Close the polygon: set first and last point the same
+            # Needed for coord_polar and such
+            newdata <- rbind(newdata, newdata[1,])
+            
+            ggplot2:::ggname("geom_flat_violin", GeomPolygon$draw_panel(newdata, panel_scales, coord))
+          },
+          
+          draw_key = draw_key_polygon,
+          
+          default_aes = aes(weight = 1, colour = "grey20", fill = "white", size = 0.5,
+                            alpha = NA, linetype = "solid"),
+          
+          required_aes = c("x", "y")
+)
+```
+
+```{r fig2, echo=FALSE, fig.cap="Personal Agreement with Building Social Housing"}
+descriptives = psych::describeBy(x = s3$E3, group = s3$group)
+group = c("Control","Equality", "Proportionality", "Need")
+means = c(descriptives$'Control'$mean, descriptives$'Equality'$mean,descriptives$'Proportionality'$mean, descriptives$'Need'$mean)
+se = c(descriptives$'Control'$se, descriptives$'Equality'$se,descriptives$'Proportionality'$se, descriptives$'Need'$se)
+plotdat=data.frame(group, means, se)
+
+(s3_personal <- ggplot(data = s3, aes(y = E3, x = group, fill = group)) + geom_flat_violin(data = s3, position = position_nudge(x = .2, y = 0), alpha = .5) + geom_point(data = s3, aes(y = E3, color = group), position = position_jitter(width = .15,height = .15), size = .5, alpha = 0.5) + geom_point(data = plotdat, aes(x = group, y = means), position = position_nudge(x = 0.35), size = 1,inherit.aes = FALSE ) + geom_errorbar(inherit.aes=FALSE, data = plotdat, aes(x = group, ymax= means+(1.96*se), ymin=means+(-1.96*se), y=means), position = position_nudge(x = 0.35), width = 0.3) + expand_limits(x = 5) + guides(fill = "none") + guides(color = "none") + scale_color_grey() + scale_fill_grey() +
+    #scale_color_brewer(palette = "Accent") +
+    #scale_fill_brewer(palette = "Accent") +
+    theme_bw()+ labs(y = "Personal agreement with building social housing \n(1 = completely disagree)", x = NULL) + scale_x_discrete(expand = c(0.15,0.2),labels=c("Control","Equality", 'Proportionality'="Reciprocity", "Need")) + theme(
+        panel.grid.major = element_blank(),  # Remove major grid lines
+        panel.grid.minor = element_blank()   # Remove minor grid lines
+    ))
+
+#ggsave("plot.png", width = 6, height = 4)
+```
+
+```{r fig3, echo=FALSE, fig.cap="Percieved Majority Agreement with Building Social Housing"}
+descriptives = psych::describeBy(x = s3$E4, group = s3$group)
+group = c("Control","Equality", "Proportionality", "Need")
+means = c(descriptives$'Control'$mean, descriptives$'Equality'$mean,descriptives$'Proportionality'$mean, descriptives$'Need'$mean)
+se = c(descriptives$'Control'$se, descriptives$'Equality'$se,descriptives$'Proportionality'$se, descriptives$'Need'$se)
+plotdat=data.frame(group, means, se)
+
+(s3_majority <- ggplot(data = s3, aes(y = E4, x = group, fill = group)) + geom_flat_violin(data = s3, position = position_nudge(x = .2, y = 0), alpha = .5) + geom_point(data = s3, aes(y = E4, color = group), position = position_jitter(width = .15,height = .15), size = .5, alpha = 0.5) + geom_point(data = plotdat, aes(x = group, y = means), position = position_nudge(x = 0.35), size = 1,inherit.aes = FALSE ) + geom_errorbar(inherit.aes=FALSE, data = plotdat, aes(x = group, ymax= means+(1.96*se), ymin=means+(-1.96*se), y=means), position = position_nudge(x = 0.35), width = 0.3) + expand_limits(x = 5) + guides(fill = FALSE) + guides(color = FALSE) + scale_color_grey() + scale_fill_grey() +
+    #scale_color_brewer(palette = "Accent") +
+    #scale_fill_brewer(palette = "Accent") +
+    theme_bw() + theme_bw() + labs(y = " Majority agreement with building social housing \n(1 = completely disagree)", x = NULL) + scale_x_discrete(expand = c(0.15,0.2),labels=c("Control","Equality", 'Proportionality'="Reciprocity", "Need"))+
+    theme(
+        panel.grid.major = element_blank(),  # Remove major grid lines
+        panel.grid.minor = element_blank()   # Remove minor grid lines
+    ))
+
+#ggsave("plot.png", width = 6, height = 4)
+
+```
+
+Figure 1 shows that, on average, respondents consistently rated their personal support for the housing project higher than their perception of societal support.
+
+Figures 2 and 3 further reinforce this pattern. In Figure 2, the distribution of responses is consistently clustered toward higher agreement levels (3–4) across all experimental conditions, indicating stronger personal support. In contrast, Figure 3 shows that responses cluster around lower agreement levels (1–2), reflecting the respondent's belief that societal support is weaker.
+
+This consistent pattern across all experimental conditions suggests a systematic gap, where the respondents underestimate societal support relative to their personal support.
+
+### Handling of Missing Data
+
+The original paper does not explicitly discuss missing data handling for Study 3. The dataset didn’t have any missing values for the independent variables and two dependent variables used in the main analysis. In addition to the main analysis, the author explored the interaction between the treatment groups and the income status of the respondents. For this analysis, some missing values are observed in the income variable, and the author handled this missing data by excluding the observations with missing information. The author didn’t report any findings regarding this interaction analysis (N = 916) or the effect of income factors specific to Study 3 which might serve as a justification for not reporting on missing income information.
+
+# Model Replication and Alternative Model
+
+## Original Model
+
+The ordinal logistic regression models in Study 3 were designed to establish causal inference by estimating how different distributive fairness principles (equality, reciprocity, need) influence support for redistributive policies toward marginalized groups. The experimental treatments were randomly assigned to identify the causal effects of different distributive fairness frames on public support for Roma, the marginalized group.
+
+In Study 3, the original authors fitted two ordinal logistic regression models as their primary analysis, examining how different conditions influenced agreement with building social housing. Each ordinal logistic regression model was fitted for two dependent variables: one measuring the respondent’s personal support for the construction project and the other measuring the respondent’s perception of societal support for the project among people in Slovakia. In simple terms, the model's dependent variables across consistent across the two models with the distinctions in the dependent variables. For each dependent variable, the model used the control condition as the baseline in addition to fitting the reciprocity condition as the baseline since responses in the reciprocity condition elicited the most support in comparison to the other fairness principles.
+
+```{r, results=FALSE, message=FALSE, warning=FALSE, echo=FALSE}
+s3$E1 <- as.ordered(s3$E1)
+s3$E2 <- as.ordered(s3$E2)
+s3$E3 <- as.ordered(s3$E3)
+s3$E4 <- as.ordered(s3$E4)
+
+
+s3personal  <- polr(E3 ~ group, data = s3, Hess=TRUE)
+summary(s3personal)
+ctable <- coef(summary(s3personal))
+p <- pnorm(abs(ctable[, "t value"]), lower.tail = FALSE) * 2
+(ctable <- cbind(ctable, "p value" = p))
+ci <- confint(s3personal)
+exp(cbind(OR = coef(s3personal), ci))
+
+s3majority  <- polr(E4 ~ group, data = s3, Hess=TRUE)
+summary(s3majority)
+ctable <- coef(summary(s3majority))
+p <- pnorm(abs(ctable[, "t value"]), lower.tail = FALSE) * 2
+(ctable <- cbind(ctable, "p value" = p))
+ci <- confint(s3majority)
+exp(cbind(OR = coef(s3majority), ci))
+
+# Re-level to have Proportionality as baseline
+
+s3$group <- relevel(s3$group, ref = "Proportionality")
+s3personal_recip  <- polr(E3 ~ group, data = s3, Hess=TRUE)
+summary(s3personal_recip)
+ctable <- coef(summary(s3personal_recip))
+p <- pnorm(abs(ctable[, "t value"]), lower.tail = FALSE) * 2
+(ctable <- cbind(ctable, "p value" = p))
+ci <- confint(s3personal_recip)
+exp(cbind(OR = coef(s3personal_recip), ci))
+
+
+s3majority_recip  <- polr(E4 ~ group, data = s3, Hess=TRUE)
+summary(s3majority_recip)
+ctable <- coef(summary(s3majority_recip))
+p <- pnorm(abs(ctable[, "t value"]), lower.tail = FALSE) * 2
+(ctable <- cbind(ctable, "p value" = p))
+ci <- confint(s3majority_recip)
+exp(cbind(OR = coef(s3majority_recip), ci))
+```
+
+\bigskip
+\begin{table}[H]
+    \centering
+    \caption{\textit{Personal Support on Support for Building Social Housing}}
+    \begin{tabular}{lcccc}
+        \toprule
+        & Estimate & Std. Error & \textit{p} & OR [95\% CI] \\
+        \midrule
+        \multicolumn{5}{l}{\textbf{Baseline = Control}} \\
+        Reciprocity & 0.60 & 0.16 &  \textless{}.001 & 1.83 [1.33, 2.52] \\
+        Equality & 0.22 & 0.16 & 0.172 & 1.25 [0.91, 1.71] \\
+        Need & -0.16 & 0.16 & 0.323 & 0.85 [0.62, 1.17] \\
+        \midrule
+        \multicolumn{5}{l}{\textbf{Baseline = Reciprocity}} \\
+        Equality & -0.38 & 0.16 & 0.018 & 0.68 [0.50, 0.94] \\
+        Need & -0.76 & 0.16 & \textless{}.001 & 0.47 [0.40, 0.64] \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+\begin{table}[H]
+    \centering
+    \caption{\textit{Majority Perspective on Support for Building Social Housing}}
+    \begin{tabular}{lcccc}
+        \toprule
+        & Estimate & Std. Error & \textit{p} & OR [95\% CI] \\
+        \midrule
+        \multicolumn{5}{l}{\textbf{Baseline = Control}} \\
+        Reciprocity & 0.76 & 0.17   \textless{}.001 & 2.15 [1.55, 2.97] \\
+        Equality & 0.35 & 0.17 & 0.033 & 1.42 [1.03, 1.97] \\
+        Need & 0.02 & 0.16 & 0.919 & 1.02 [0.74, 1.40] \\
+        \midrule
+        \multicolumn{5}{l}{\textbf{Baseline = Reciprocity}} \\
+        Equality & -0.41 & 0.16 & 0.013 & 0.66 [0.48, 0.92] \\
+        Need & -0.75 & 0.16 & \textless{}.001 & 0.47 [0.34, 0.66] \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+Tables 1 and 2 present the results of our replication. The coefficient estimates, standard errors, and number of observations match those of the original study exactly, confirming the successful replication of the the two ordinal logistic models from the original study.
+
+## Alternative Model
+
+Similar to the original ordinal logistic regression models, the alternative models analyze the same dependent variables: personal support and perceived majority support for building social housing for Roma residents. However, the alternative models incorporate two additional independent variables: respondents' perceptions of EU funding benefits and perceived economic-social competition between Slovak and Roma populations. By including these factors, the alternative models aim to assess whether broader economic-social concerns influence the respondent's personal support and perceived majority support for distributive policies.
+
+```{r}
+s3$E1_coll <- car::recode(s3$E1,"'1'='2'")
+s3$E2_coll <- car::recode(s3$E2,"'1'='2'")
+
+s3$E1_coll <- as.ordered(s3$E1_coll)
+s3$E2_coll <- as.ordered(s3$E2_coll)
+```
+
+```{r, results=FALSE, message=FALSE, warning=FALSE, echo=FALSE}
+
+s3$group <- relevel(s3$group, ref = "Control")
+a_personal <- polr(E3 ~ group + E1_coll + E2_coll, data = s3, Hess=TRUE)
+summary(a_personal)
+ctable <- coef(summary(a_personal))
+p <- pnorm(abs(ctable[, "t value"]), lower.tail = FALSE) * 2
+(ctable <- cbind(ctable, "p value" = p))
+ci <- confint(a_personal)
+exp(cbind(OR = coef(a_personal), ci))
+
+a_major <- polr(E4 ~ group + E1_coll + E2_coll, data = s3, Hess=TRUE)
+summary(a_major)
+ctable <- coef(summary(a_major))
+p <- pnorm(abs(ctable[, "t value"]), lower.tail = FALSE) * 2
+(ctable <- cbind(ctable, "p value" = p))
+ci <- confint(a_major)
+exp(cbind(OR = coef(a_major), ci))
+```
+
+\bigskip
+\begin{table}[H]
+    \centering
+    \caption{\textit{Alternative Models - Support for Building Social Housing}}
+    \begin{tabular}{lcccc}
+        \toprule
+        & Estimate & Std. Error & \textit{p} & OR [95\% CI] \\
+        \midrule
+        \multicolumn{5}{l}{\textbf{DV = Personal Support}} \\
+        Reciprocity & 0.80 & 0.17 &  \textless{}.001 & 2.22 [1.60, 3.09] \\
+        Equality & 0.42 & 0.17 & 0.012 & 1.52 [1.10, 2.10] \\
+        Need & -0.10 & 0.16 & 0.547 & 0.91 [0.66, 1.25] \\
+        EU funding.L & 0.98 & 0.12 & \textless{}.001 & 2.65 [2.08, 3.39] \\
+        EU funding.Q & 0.06 & 0.10 & 0.563 & 1.06 [0.87, 1.29] \\
+        Competition.L & -1.10 & 0.12 & \textless{}.001 & 0.33 [0.26, 0.42] \\
+        Competition.Q & -0.37 & 0.11 & \textless{}.001 & 0.69 [0.56, 0.85] \\ 
+        \midrule
+        \multicolumn{5}{l}{\textbf{DV = Majority Perspective}} \\
+        Reciprocity & 0.86 & 0.17 &  \textless{}.001 & 2.36 [1.70, 3.30] \\
+        Equality & 0.49 & 0.17 & 0.003 & 1.63 [1.17, 2.28] \\
+        Need & 0.07 & 0.17 & 0.686 & 1.07 [0.77, 1.48] \\
+        EU funding.L & 0.53 & 0.13 & \textless{}.001 & 1.70 [1.33, 2.17] \\
+        EU funding.Q & -0.13 & 0.10 & 0.208 & 0.88 [0.72, 1.07] \\
+        Competition.L & -0.66 & 0.11 & \textless{}.001 & 0.52 [0.41, 0.65] \\
+        Competition.Q & -0.34 & 0.11 & \textless{}.001 & 0.71 [0.58, 0.88] \\ 
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+## Model Comparison and Evaluations
+
+To assess the relative performance of the original and alternative models, we compare their predictive accuracy, interpretability, and explanatory power. The original models rely solely on the experimental group variable to predict respondents' support for social housing, while the alternative models incorporate additional attitudinal predictors—perceptions of EU funding benefits and economic-social competition—to enhance explanatory depth. Below, two tables summarizes the estimated coefficients, model fit statistics, and cross-validation results. They offer insights into how these factors shape public attitudes toward the housing project. This comparison helps determine whether integrating attitudinal predictors would improve alternative models' predicitive performance and interpretability in explaining support for redistributive policies
+
+### In-Sample Metrics Comparison
+
+The results in Table 4 indicate that the alternative models—which incorporate respondents' perceptions of EU funding benefits and perceived economic-social competition—substantially alter the estimated effects of group assignment compared to the original models. In the original models, group effects were relatively modest. For instance, Model 1 (Table 4), which measures personal support, shows coefficients of 0.22, 0.60, and -0.16 for the "Equality," "Reciprocity," and "Need" groups, respectively, indicating weaker effects. In contrast, Model 2 (Table 4), which measures the majority perspective, shows larger and more significant effects for the "Equality" and "Reciprocity" groups. These differences suggest that incorporating attitudinal measures magnifies the observed effects. The modest magnitudes and the limited scope of predictors in the original models further indicated that group assignment alone might not have provided a nuanced explanation of respondents' attitudes toward the housing project.
+
+\bigskip
+
+```{r, results=FALSE, message=FALSE, warning=FALSE, echo=FALSE, results='asis'}
+stargazer(s3personal, a_personal, s3majority, a_major, type = "latex", header = FALSE,
+          title = "Model Comparisons on Support for Building Social Housing",
+          dep.var.labels = c("Personal Agreement", "Majority Agreement"),
+          covariate.labels = c("Equality", "Reciprocity", "Need",
+                               "EU funding.L", "EU funding.Q",
+                               "Competitive.L", "Competitive.Q"),
+          star.cutoffs = c(0.05, 0.01, 0.001),
+          digits = 2,
+          column.labels = c("Orig.", "Alt.",
+                            "Orig.", "Alt."),
+          add.lines = list(
+            # Separate section for Observations, Log-Likelihood, and AIC
+            c("Log-Likelihood", sprintf("%.2f", logLik(s3personal)), sprintf("%.2f", logLik(a_personal)),
+                                sprintf("%.2f", logLik(s3majority)), sprintf("%.2f", logLik(a_major))),
+            c("AIC", sprintf("%.2f", AIC(s3personal)), sprintf("%.2f", AIC(a_personal)),
+                        sprintf("%.2f", AIC(s3majority)), sprintf("%.2f", AIC(a_major)))
+))
+```
+
+\newpage
+
+Table 4 also highlights the impact of attitudinal predictors on public support. The Model 2 indicates that perceptions of EU funding benefits (EU funding.L = 0.975, p \< 0.001) and economic-social competition (Competition.L = -1.101, p \< 0.001; Competition.Q = -0.375, p \< 0.001) are strong predictors of personal support. Similarly, Model 4 (Table 4) confirms these findings with consistent significant coefficients for EU funding.L (0.529, p \< 0.001) and Competition.L (-0.655, p \< 0.001), emphasizing the influential role these attitudinal dimensions play. However, despite these additions, group assignment remains a strong and significant predictor, suggesting that while attitudinal measures enhance explanatory power, group assignment still plays a meaningful role.
+
+Furthermore, in-sample model comparison metrics reinforce the advantages of the alternative models. As shown in Table 4, the Log-Likelihood values for both alternative models are larger in comparison to the original models. Similarly, the Akaike Information Criterion (AIC) values are lower for both alternative models. Both of these in-sample metrics suggest that the alternative models achieve a better balance between goodness-of-fit and model complexity. Thus, the alternative models offer not only improved statistical robustness but also deeper insights into the socio-political dynamics underpinning public opinion, reinforcing the analytical value of considering multiple explanatory dimensions in research on attitudes and decision-making.
+
+By incorporating these additional predictors, the alternative models expand our understanding of how the social-cultural factors influence the respondent's response to the conditions. They clarify how broader perceptions of fairness regarding EU funding and concerns about social competition shape attitudes toward the construction project.
+
+### Cross Validation
+
+In addition to in-sample metrics, cross-validation was employed to assess the relative predictive performance of the models. While in-sample metrics, such as Log-Likelihood and AIC, provide insights into how well a model fits the observed data, cross-validation ensures that the improvements in fit observed in the previous section are not due to overfitting but instead reflect genuine predictive ability. The following tables summarize the results from the cross-validation evaluations.
+
+\bigskip
+
+```{r, results=FALSE, echo=FALSE, warning=FALSE, message=FALSE}
+# Convert outcomes to factors (if not already)
+s3$E3 <- as.factor(s3$E3)
+s3$E4 <- as.factor(s3$E4)
+
+# Original models with 10-fold CV
+train_control <- trainControl(method = "cv", number = 10)
+
+set.seed(123)
+model_1 <- train(
+  E3 ~ group,
+  data = s3,
+  method = "polr",
+  trControl = train_control,
+  Hess = TRUE
+)
+print(model_1)
+
+set.seed(123)
+model_2 <- train(
+  E4 ~ group,
+  data = s3,
+  method = "polr",
+  trControl = train_control,
+  Hess = TRUE
+)
+print(model_2)
+
+# Alternative models with 50-fold CV
+train_control_alt <- trainControl(method = "cv", number = 50)
+
+set.seed(123)
+model_cv1 <- train(
+  E3 ~ group + E1_coll + E2_coll,
+  data = s3,
+  method = "polr",
+  trControl = train_control_alt,
+  Hess = TRUE
+)
+print(model_cv1)
+
+set.seed(123)
+model_cv2 <- train(
+  E4 ~ group + E1_coll + E2_coll,
+  data = s3,
+  method = "polr",
+  trControl = train_control_alt,
+  Hess = TRUE
+)
+print(model_cv2)
+```
+
+```{r, results=FALSE, echo=FALSE, warning=FALSE, message=FALSE}
+# For Original models
+orig_E3 <- data.frame(
+  Model = "Original",
+  Method = model_1$results$method,
+  Accuracy = round(model_1$results$Accuracy, 3),
+  Kappa = round(model_1$results$Kappa, 3),
+  stringsAsFactors = FALSE
+)
+
+orig_E4 <- data.frame(
+  Model = "Original",
+  Method = model_2$results$method,
+  Accuracy = round(model_2$results$Accuracy, 3),
+  Kappa = round(model_2$results$Kappa, 3),
+  stringsAsFactors = FALSE
+)
+
+# For Alternative models
+alt_E3 <- data.frame(
+  Model = "Alternative",
+  Method = model_cv1$results$method,
+  Accuracy = round(model_cv1$results$Accuracy, 3),
+  Kappa = round(model_cv1$results$Kappa, 3),
+  stringsAsFactors = FALSE
+)
+
+alt_E4 <- data.frame(
+  Model = "Alternative",
+  Method = model_cv2$results$method,
+  Accuracy = round(model_cv2$results$Accuracy, 3),
+  Kappa = round(model_cv2$results$Kappa, 3),
+  stringsAsFactors = FALSE
+)
+```
+
+```{r, results=FALSE, message=FALSE, warning=FALSE, echo=FALSE, results='asis'}
+# Combine all summaries into one data frame
+cv_results_personal <- rbind(orig_E3, alt_E3)
+
+
+# Display using stargazer
+stargazer(cv_results_personal, summary = FALSE, title = "Cross-Validation Results on Models Measuring Personal Support",
+          header = FALSE,
+          type = "latex")
+
+```
+
+```{r, results=FALSE, message=FALSE, warning=FALSE, echo=FALSE, results='asis'}
+cv_results_majority <- rbind(orig_E4, alt_E4)
+
+stargazer(cv_results_majority, summary = FALSE, title = "Cross-Validation Results on Models Measuring Majority Agreement", header = FALSE,
+          type = "latex")
+
+
+```
+
+Based on the cross-validation results, the original models—those that include only the group variable—demonstrate modest predictive performance. As shown in Table 5, for predicting the respondents' personal support, the accuracy is consistently 0.376 with a Kappa of 0 for the original model regardless of the link function (cauchit, cloglog, logistic, loglog, or probit). This indicates that the group variable by itself fails to capture sufficient variability in respondents’ attitudes. Similarly in Table 6, the original models predicting the majority perspective yielded an accuracy of about 0.402 with a Kappa of 0.064, suggesting only minimal agreement beyond chance.
+
+In contrast, the alternative models, which incorporate additional attitudinal measures (EU funding and Competition) alongside the group variable, show a notable improvement in performance. Table 5, predicting the personal support outcome, shows the alternative models achieve accuracy ranging from 0.432 to 0.443, and the Kappa statistics improve substantially—from 0.152 with the cauchit link up to 0.178 with the probit link. For predicting the majority perspective, Table 6 reports alternative models' accuracy range between 0.424 and 0.446, with Kappa values reaching as high as 0.157 for the cauchit link, despite some variation across link functions.
+
+This enhancement in performance implies that respondents’ perceptions of EU funding benefits and their views on economic-social competition are critical in predicting support levels. By integrating these attitudinal measures, the alternative models not only achieve higher predictive accuracy but also provide a more nuanced interpretation of the underlying factors that drive public opinion. The results suggest that support for the construction project is influenced by a broader array of determinants than group assignment alone, highlighting the importance of considering multiple dimensions when analyzing complex socio-political attitudes.
+
+## Quantity of Interest
+
+In this section, we examine how changes in perceptions of EU funding benefits influence personal support for building social housing among respondents in the equality condition. As a reminder, the EU funding variable captures whether respondents believe that EU funds primarily benefit Slovak inhabitants (the majority). Specifically, we estimate the marginal effects of EU funding benefits to assess how a stronger belief that EU funds benefit the majority population impacts the predicted probability of supporting social housing for the minority population, focusing on respondents in the equality scenario.
+
+```{r, results=FALSE, message=FALSE, warning=FALSE, echo=FALSE}
+# Refitting the model setting Equality as reference 
+
+s3$group <- relevel(s3$group, ref = "Equality")  
+qoi <- polr(E3 ~ group + E1_coll + E2_coll, data = s3, Hess=TRUE)
+summary(qoi)
+```
+
+```{r, results=FALSE, message=FALSE, warning=FALSE, echo=FALSE}
+# Compute Polynomial Contrasts for E1_coll
+contrasts(s3$E1_coll) <- contr.poly(length(unique(s3$E1_coll)))  # Ensure polynomial contrasts
+contrast_values <- contrasts(s3$E1_coll)
+print(contrast_values)
+
+# Extract Values
+E1_coll_3_L <- contrast_values[2, 1] 
+E1_coll_3_Q <- contrast_values[2, 2] 
+E1_coll_4_L <- contrast_values[3, 1] 
+E1_coll_4_Q <- contrast_values[3, 2] 
+
+
+# Compute polynomial contrasts for both variables
+E1_contrasts <- contrasts(s3$E1_coll, contrasts = TRUE)
+E2_contrasts <- contrasts(s3$E2_coll, contrasts = TRUE)
+
+# Create new dataset by adding transformed values
+s3_transformed <- cbind(
+  s3,
+  E1_coll.L = E1_contrasts[s3$E1_coll, 1],  # Linear term for E1_coll
+  E1_coll.Q = E1_contrasts[s3$E1_coll, 2],  # Quadratic term for E1_coll
+  E2_coll.L = E2_contrasts[s3$E2_coll, 1],  # Linear term for E2_coll
+  E2_coll.Q = E2_contrasts[s3$E2_coll, 2]   # Quadratic term for E2_coll
+)
+```
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+X.low <- cbind(
+  Reciprocity = 0,
+  Control = 0,
+  Need = 0,
+  E1_coll.L = E1_coll_3_L,
+  E1_coll.Q = E1_coll_3_Q,
+  E2_coll.L = median(s3_transformed$E2_coll.L),
+  E2_coll.Q = median(s3_transformed$E2_coll.Q)
+)
+
+X.high <- cbind(
+  Reciprocity = 0, 
+  Control = 0,
+  Need = 0,
+  E1_coll.L = E1_coll_4_L,
+  E1_coll.Q = E1_coll_4_Q,
+  E2_coll.L = median(s3_transformed$E2_coll.L),
+  E2_coll.Q = median(s3_transformed$E2_coll.Q)
+)
+```
+
+```{r, results=FALSE, message=FALSE, warning=FALSE, echo=FALSE}
+# Simulate coefficient draws for uncertainty estimation
+draws <- mvrnorm(1000, c(coef(qoi), qoi$zeta), solve(qoi$Hessian))
+B <- draws[, 1:length(coef(qoi))]  # Extract coefficients
+Taus <- draws[, (length(coef(qoi)) + 1):ncol(draws)]  # Extract cutpoints
+
+# Compute cumulative probabilities for E3 ≤ 1, E3 ≤ 2, and E3 ≤ 3
+P_E3_leq1_low <- plogis(Taus[, 1] - B %*% t(X.low))  # P(E3 ≤ 1) for low E1_coll
+P_E3_leq2_low <- plogis(Taus[, 2] - B %*% t(X.low))  # P(E3 ≤ 2) for low E1_coll
+P_E3_leq3_low <- plogis(Taus[, 3] - B %*% t(X.low))  # P(E3 ≤ 3) for low E1_coll
+
+P_E3_leq1_high <- plogis(Taus[, 1] - B %*% t(X.high)) # P(E3 ≤ 1) for high E1_coll
+P_E3_leq2_high <- plogis(Taus[, 2] - B %*% t(X.high)) # P(E3 ≤ 2) for high E1_coll
+P_E3_leq3_high <- plogis(Taus[, 3] - B %*% t(X.high)) # P(E3 ≤ 3) for high E1_coll
+
+# Compute P(E3 = 2) and P(E3 = 3)
+P_E3_2_low <- P_E3_leq2_low - P_E3_leq1_low
+P_E3_2_high <- P_E3_leq2_high - P_E3_leq1_high
+P_E3_3_low <- P_E3_leq3_low - P_E3_leq2_low
+P_E3_3_high <- P_E3_leq3_high - P_E3_leq2_high
+
+# Compute first difference in probabilities
+fd_E3_2 <- P_E3_2_high - P_E3_2_low
+fd_E3_3 <- P_E3_3_high - P_E3_3_low
+```
+
+```{r, results=FALSE, message=FALSE, warning=FALSE, echo=FALSE}
+mean_fd_E3_3 <- mean(fd_E3_3)  # Mean change in Pr(E3 = 3)
+mean_fd_E3_2 <- mean(fd_E3_2)  # Mean change in Pr(E3 = 2)
+
+# Convert to percentage
+change_E3_3 <- mean_fd_E3_3 * 100
+change_E3_2 <- mean_fd_E3_2 * 100
+
+# Print results
+cat("Mean change in Pr(E3 = 3):", round(change_E3_3, 2), "%\n")
+cat("Mean change in Pr(E3 = 2):", round(change_E3_2, 2), "%\n")
+```
+
+```{r fig4, echo=FALSE, fig.cap="Effect of Perception on EU Funding on Personal Support (Alternative Model)", fig.width=8, fig.height=6}
+
+plot(density(fd_E3_2, adjust = 1.5),
+     xlim = c(-0.3, 0.3),
+     ylim = c(0, 40),
+     xlab = "Change in Predicted Probability for Respondents in Equality Condition",
+     col = "blue", lwd = 2, main = "")
+lines(density(fd_E3_3, adjust = 1.5), col = "red", lwd = 2, lty = 2)
+
+legend("topright", 
+       legend = c("Change in P(Personal Suport = 2) when EU funding perception increases from Medium to High", 
+                  "Change in  P(Personal Suport = 3)  when EU funding perception increases from Medium to High"), 
+       col = c("blue", "red"), 
+       lwd = 2, 
+       lty = c(1, 2), 
+       cex = 0.8,   # Reduce text size of legend
+       bty = "n")   # Remove box around legend
+
+```
+
+Figure 5 illustrates the distribution of changes in predicted probability as perceptions of EU funding benefits shift from medium to high in the equality condition. The figure indicates that an increase in EU funding perceptions from medium to high increases the probability that respondents rate their personal support as 3 instead of 2, indicating a higher level of support for the housing project. This effect is estimated to be approximately 15% among respondents in the equality condition. In contrast, the probability of selecting 2 (moderate support) decreases by 4.16% in the equality condition.
+
+# Conclusion
+
+In conclusion, our analyses demonstrate that models incorporating attitudinal measures enhance our understanding of public support for the construction project beyond those based solely on group assignments. The original models, which relied exclusively on experimental group conditions, yielded relatively modest predictive accuracy (0.376 for the personal support variable and 0.402 for the majority perspective outcome variable), with minimal agreement beyond chance, as reflected in near-zero Kappa values.
+
+In contrast, the alternative models that integrate perceptions of EU funding benefits and perceived economic-social competition exhibit significantly improved predictive performance. Accuracy of the models increase to approximately 0.443 for personal support and 0.446 for majority perspective, accompanied by more robust Kappa statistics.
+
+While these findings demonstrate that incorporating attitudinal measures improves predictive accuracy, it is important to recognize that the original study’s primary objective was to establish causal inference rather than optimize predictive performance. Higher predictive accuracy does not necessarily imply stronger causal validity, as causal models prioritize identifying unbiased effects of key variables over maximizing classification accuracy. Nonetheless, the improved model performance suggests that these additional attitudinal measures capture meaningful variation in public support, which may complement causal interpretations by providing a richer contextual understanding of the observed effects.
+
+Overall, incorporating these additional dimensions not only strengthens the statistical performance of our models but also provides a more comprehensive framework for understanding the socio-political dynamics that shape personal and public opinion on the distributive fairness of marginalized groups.
+
+\newpage
+
+# References
+
+FINDOR, ANDREJ et al. 2022. “Equality, Reciprocity, or Need? Bolstering Welfare Policy Support for Marginalized Groups with Distributive Fairness.” *American Political Science Review* 117(3): 805–21. doi: 10.1017/s0003055422001046.
